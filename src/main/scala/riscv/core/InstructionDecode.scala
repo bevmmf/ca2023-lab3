@@ -7,14 +7,14 @@ import scala.collection.immutable.ArraySeq
 
 import chisel3._
 import chisel3.util._
-import riscv.Parameters
+import riscv.Parameters //Parameters 作為全局設定，包含地址寬度、資料寬度等參數
 
-object InstructionTypes {
-  val L  = "b0000011".U
-  val I  = "b0010011".U
-  val S  = "b0100011".U
-  val RM = "b0110011".U
-  val B  = "b1100011".U
+object InstructionTypes { //最大類別
+  val L  = "b0000011".U //l = load
+  val I  = "b0010011".U //i = immediate
+  val S  = "b0100011".U //s = store
+  val RM = "b0110011".U 
+  val B  = "b1100011".U 
 }
 
 object Instructions {
@@ -27,7 +27,7 @@ object Instructions {
   val fence = "b0001111".U
 }
 
-object InstructionsTypeL {
+object InstructionsTypeL { //function3
   val lb  = "b000".U
   val lh  = "b001".U
   val lw  = "b010".U
@@ -35,7 +35,7 @@ object InstructionsTypeL {
   val lhu = "b101".U
 }
 
-object InstructionsTypeI {
+object InstructionsTypeI { 
   val addi  = 0.U
   val slli  = 1.U
   val slti  = 2.U
@@ -46,7 +46,7 @@ object InstructionsTypeI {
   val andi  = 7.U
 }
 
-object InstructionsTypeS {
+object InstructionsTypeS { //function3
   val sb = "b000".U
   val sh = "b001".U
   val sw = "b010".U
@@ -125,29 +125,30 @@ object RegWriteSource {
 
 class InstructionDecode extends Module {
   val io = IO(new Bundle {
-    val instruction = Input(UInt(Parameters.InstructionWidth))
+    val instruction = Input(UInt(Parameters.InstructionWidth)) //instruction: 一個輸入信號，包含 32 位元的機器指令（RISC-V 指令長度）
 
-    val regs_reg1_read_address = Output(UInt(Parameters.PhysicalRegisterAddrWidth))
-    val regs_reg2_read_address = Output(UInt(Parameters.PhysicalRegisterAddrWidth))
-    val ex_immediate           = Output(UInt(Parameters.DataWidth))
-    val ex_aluop1_source       = Output(UInt(1.W))
-    val ex_aluop2_source       = Output(UInt(1.W))
-    val memory_read_enable     = Output(Bool())
-    val memory_write_enable    = Output(Bool())
-    val wb_reg_write_source    = Output(UInt(2.W))
-    val reg_write_enable       = Output(Bool())
-    val reg_write_address      = Output(UInt(Parameters.PhysicalRegisterAddrWidth))
+    val regs_reg1_read_address = Output(UInt(Parameters.PhysicalRegisterAddrWidth))  //讀取的reg1地址
+    val regs_reg2_read_address = Output(UInt(Parameters.PhysicalRegisterAddrWidth))  //讀取的reg2地址
+    val ex_immediate           = Output(UInt(Parameters.DataWidth)) //解碼產生的立即數（Immediate）
+    val ex_aluop1_source       = Output(UInt(1.W)) //定義 ALU 的操作數來源1（寄存器或立即數）
+    val ex_aluop2_source       = Output(UInt(1.W)) //定義 ALU 的操作數來源2（寄存器或立即數）
+    val memory_read_enable     = Output(Bool()) //可讀memory？
+    val memory_write_enable    = Output(Bool()) //可寫memory？
+    val wb_reg_write_source    = Output(UInt(2.W)) //定義寫回階段的資料來源（ALU 結果,記憶體,下一指令地址）
+    val reg_write_enable       = Output(Bool()) //是否啟用寫回寄存器
+    val reg_write_address      = Output(UInt(Parameters.PhysicalRegisterAddrWidth)) //寫回的目標寄存器地址
   })
-  val opcode = io.instruction(6, 0)
-  val funct3 = io.instruction(14, 12)
+  //seperate the instruction to different part
+  val opcode = io.instruction(6, 0) //opcode：操作碼，決定指令類型（如 Load, Store, Branch）
+  val funct3 = io.instruction(14, 12) 
   val funct7 = io.instruction(31, 25)
   val rd     = io.instruction(11, 7)
   val rs1    = io.instruction(19, 15)
   val rs2    = io.instruction(24, 20)
 
-  io.regs_reg1_read_address := Mux(opcode === Instructions.lui, 0.U(Parameters.PhysicalRegisterAddrWidth), rs1)
-  io.regs_reg2_read_address := rs2
-  val immediate = MuxLookup(
+  io.regs_reg1_read_address := Mux(opcode === Instructions.lui, 0.U(Parameters.PhysicalRegisterAddrWidth), rs1) //若指令是 lui（Load Upper Immediate），不需要 rs1，因此設為 0 否則是rs1
+  io.regs_reg2_read_address := rs2 //取reg_rs2地址
+  val immediate = MuxLookup(  //提取imm (根據不同opcode之不同結構提取imm)
     opcode,
     Cat(Fill(20, io.instruction(31)), io.instruction(31, 20)),
     IndexedSeq(
@@ -156,7 +157,7 @@ class InstructionDecode extends Module {
       Instructions.jalr  -> Cat(Fill(21, io.instruction(31)), io.instruction(30, 20)),
       InstructionTypes.S -> Cat(Fill(21, io.instruction(31)), io.instruction(30, 25), io.instruction(11, 7)),
       InstructionTypes.B -> Cat(
-        Fill(20, io.instruction(31)),
+        Fill(20, io.instruction(31)), //擴展20 bits符號位
         io.instruction(7),
         io.instruction(30, 25),
         io.instruction(11, 8),
@@ -174,11 +175,11 @@ class InstructionDecode extends Module {
       )
     )
   )
-  io.ex_immediate := immediate
-  io.ex_aluop1_source := Mux(
+  io.ex_immediate := immediate //將imm送到ex階段
+  io.ex_aluop1_source := Mux( //ALU source 1 控制訊號(1 for InstructionAddress,0 for Register)
     opcode === Instructions.auipc || opcode === InstructionTypes.B || opcode === Instructions.jal,
-    ALUOp1Source.InstructionAddress,
-    ALUOp1Source.Register
+    ALUOp1Source.InstructionAddress, //InstructionAddress 是指當前指令的地址 = PC
+    ALUOp1Source.Register 
   )
 
   // ALU op2 from reg: R-type,
@@ -188,14 +189,18 @@ class InstructionDecode extends Module {
   //                   U-type (lui, auipc),
   //                   S-type (rs2 value sent to MemControl, ALU computes rs1 + imm.)
   //                   B-type (rs2 compares with rs1 in jump judge unit, ALU computes jump address PC+imm.)
-  io.ex_aluop2_source := Mux(
+  io.ex_aluop2_source := Mux( ////ALU source 2 控制訊號(1 for reg,0 for imm)
     opcode === InstructionTypes.RM,
     ALUOp2Source.Register,
     ALUOp2Source.Immediate
   )
 
   // lab3(InstructionDecode) begin
-
+	io.memory_read_enable := (opcode === InstructionTypes.L)   
+	
+	
+	
+	io.memory_write_enable := (opcode === InstructionTypes.S)  
   // lab3(InstructionDecode) end
 
   io.wb_reg_write_source := MuxCase(
